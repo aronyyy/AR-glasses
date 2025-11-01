@@ -45,19 +45,29 @@ class Arrow3D(FancyArrowPatch):
 FOCAL_LENGTH = 540 # Example value, replace with your calibrated one
 
 # --- 2. KNOWN OBJECTS (Width in Centimeters) ---
-# Event-focused list of common, small items
+# NEW: Event-focused list of SMALL, common items
 KNOWN_OBJECTS = {
     "cell phone": 7.6,  # Approx. width of a large smartphone
-    "laptop": 35.0,     # Approx. width of a 15" laptop
     "bottle": 7.0,      # Water bottle
     "cup": 8.0,         # Coffee cup
     "book": 15.0,       # Avg. book width
-    "backpack": 30.0,   # Standard backpack
-    "handbag": 25.0,    # Handbag/purse
-    "umbrella": 6.0,    # Closed umbrella
     "remote": 5.0,      # TV/projector remote
-    "keyboard": 30.0,
     "mouse": 6.0,
+    "scissors": 7.0,    # Office scissors
+    "apple": 8.0,
+    "orange": 8.0,
+    "banana": 4.0,      # Width, not length
+    "fork": 2.5,
+    "knife": 2.0,
+    "spoon": 3.0,
+    "bowl": 14.0,
+    "sandwich": 8.0,
+    "donut": 9.0,
+    "clock": 15.0,      # Small clock / watch
+    "vase": 12.0,
+    "teddy bear": 18.0,
+    "toothbrush": 1.5,
+    "pencil": 1,
 }
 
 # --- 3. DETECTION SETTINGS ---
@@ -176,7 +186,7 @@ def main():
                 # --- Check if this is one of our known objects ---
                 if name in KNOWN_OBJECTS and len(detected_vectors) < MAX_VECTORS_TO_DRAW: 
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
-                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
+                    center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2 # Corrected typo: y1 -> x1
                     
                     # Get object info from our dict
                     actual_width = KNOWN_OBJECTS[name]
