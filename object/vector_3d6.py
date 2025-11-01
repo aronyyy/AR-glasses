@@ -42,12 +42,11 @@ class Arrow3D(FancyArrowPatch):
 # --- 1. CALIBRATION & INTRINSICS ---
 # PASTE YOUR FOCAL LENGTH (in pixels) HERE
 # This value is found by running calibrate_video.py
-FOCAL_LENGTH = 540
+FOCAL_LENGTH = 540 # Example value, replace with your calibrated one
 
 # --- 2. KNOWN OBJECTS (Width in Centimeters) ---
-# Expanded list for an event
+# Event-focused list of common, small items
 KNOWN_OBJECTS = {
-    "person": 45.0,     # Avg. shoulder width
     "cell phone": 7.6,  # Approx. width of a large smartphone
     "laptop": 35.0,     # Approx. width of a 15" laptop
     "bottle": 7.0,      # Water bottle
@@ -55,18 +54,15 @@ KNOWN_OBJECTS = {
     "book": 15.0,       # Avg. book width
     "backpack": 30.0,   # Standard backpack
     "handbag": 25.0,    # Handbag/purse
-    "suitcase": 50.0,   # Carry-on suitcase
     "umbrella": 6.0,    # Closed umbrella
     "remote": 5.0,      # TV/projector remote
     "keyboard": 30.0,
     "mouse": 6.0,
-    "chair": 50.0,      # Seat width
-    "tv": 120.0,        # "tv" is the class for TV/monitor
 }
 
 # --- 3. DETECTION SETTINGS ---
 CONFIDENCE_THRESHOLD = 0.5
-MAX_VECTORS_TO_DRAW = 5 # <--- NEW: Set to 5
+MAX_VECTORS_TO_DRAW = 5 # Set to 5
 
 # --- 4. 3D VISUALIZATION SETTINGS ---
 INITIAL_VIEW_LIMIT = 100.0 # 100cm (1 meter)
@@ -101,9 +97,9 @@ def main():
     # Plot camera origin
     ax_3d.plot([0], [0], [0], 'ko', markersize=10, label="Camera (Origin)")
     
-    # --- NEW: Create a pool of 5 arrows and 5 text labels ---
+    # --- NEW: Create a pool of 5 arrows and a list for text artists ---
     gaze_arrows = []
-    vector_labels = []
+    vector_label_artists = [] # This list will hold the 3D text artists
     colors = plt.cm.jet(np.linspace(0, 1, MAX_VECTORS_TO_DRAW)) # Get 5 different colors
 
     for i in range(MAX_VECTORS_TO_DRAW):
@@ -115,13 +111,6 @@ def main():
         )
         ax_3d.add_artist(arrow)
         gaze_arrows.append(arrow)
-        
-        # Create text, make it invisible initially
-        label = ax_3d.text2D(
-            0.05, 0.95 - (i * 0.05), "", # Stagger text labels down the side
-            transform=ax_3d.transAxes, color=colors[i], visible=False
-        )
-        vector_labels.append(label)
 
 
     # Set initial plot limits
@@ -216,6 +205,11 @@ def main():
         # --- Only update plot elements every N frames to reduce lag ---
         if frame_count % PLOT_UPDATE_SKIP_FRAMES == 0:
             
+            # --- NEW: Clear all old 3D text labels ---
+            for txt in vector_label_artists:
+                txt.remove()
+            vector_label_artists.clear()
+
             max_Z = INITIAL_VIEW_LIMIT # Default zoom
 
             for i in range(MAX_VECTORS_TO_DRAW):
@@ -228,19 +222,20 @@ def main():
                     gaze_arrows[i].set_data_3d(*arrow_data)
                     gaze_arrows[i].set_visible(True)
                     
-                    # Update text
-                    label_text = f"{name}: ({X:.1f}, {Y:.1f}, {Z:.1f}) cm"
-                    vector_labels[i].set_text(label_text)
-                    vector_labels[i].set_visible(True)
+                    # --- NEW: Create 3D text label at the tip of the arrow ---
+                    label_text = f"{name}\n({X:.0f}, {Y:.0f}, {Z:.0f})cm"
+                    # Plot text at the (X, Z, Y) coordinate (matching axes)
+                    txt_artist = ax_3d.text(X, Z, Y, label_text, color=colors[i], fontsize=9)
+                    vector_label_artists.append(txt_artist)
                     
                     # Update max zoom
                     if Z > max_Z:
                         max_Z = Z
                 
                 else:
-                    # No vector for this slot, hide the arrow and text
+                    # No vector for this slot, hide the arrow
                     gaze_arrows[i].set_visible(False)
-                    vector_labels[i].set_visible(False)
+            
 
             # --- Dynamically set plot limits to "zoom in" ---
             z_limit = max(100, max_Z + 100) # At least 100cm, or 100cm past farthest object
@@ -251,8 +246,9 @@ def main():
             ax_3d.set_zlim(-xy_limit, xy_limit) # Y is height (plotted on Z-axis)
                     
             # --- Update the 3D plot ---
-            fig_3d.canvas.draw_idle()
-            fig_3d.canvas.flush_events()
+            # This is the line that causes lag, but it's necessary
+            # in a single-threaded script to see updates.
+            plt.pause(0.001)
 
         # --- Add FPS counter to CV2 window ---
         cv2.putText(annotated_frame, fps_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
