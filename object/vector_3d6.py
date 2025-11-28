@@ -53,7 +53,7 @@ KNOWN_OBJECTS = {
     "book": 15.0,       # Avg. book width
     "remote": 5.0,      # TV/projector remote
     "mouse": 6.0,
-    "scissors": 7.0,    # Office scissors
+    "scissors": 5,    # Office scissors
     "apple": 8.0,
     "orange": 8.0,
     "banana": 4.0,      # Width, not length
