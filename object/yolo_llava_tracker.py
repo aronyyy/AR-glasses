@@ -9,7 +9,7 @@ from io import BytesIO
 from collections import deque
 from PIL import Image
 
-# AI / ML Imports
+# --- AI & ML IMPORTS ---
 from ultralytics import YOLO
 import torch
 import torchvision.transforms as T
@@ -17,240 +17,261 @@ import torchvision.models as models
 from torchvision.models import ResNet50_Weights
 from langchain_ollama import OllamaLLM
 
-# -------- CONFIG ----------
-YOLO_MODEL = "yolo11n.pt"  # or yolov8n.pt
-CONF_THRESH = 0.35
-IMG_SZ = 320
+# ==========================================
+#               CONFIGURATION
+# ==========================================
+
+# 1. VISION AI
+OLLAMA_MODEL = "llava" 
+
+# 2. DETECTOR
+YOLO_MODEL = "yolo11s.pt" 
+
+# 3. TRACKING
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Tracking settings
-SIMILARITY_THRESHOLD = 0.6
-LAST_N_IDS = 10
-MIN_BOX_SIDE = 12
-IGNORED_CLASSES = {"person", "dining table", "table"}
+# 4. TUNING
+# Lowered to 0.15 to detect "almost anything"
+CONF_THRESH = 0.1        
+IMG_SZ = 640              
+SIMILARITY_THRESHOLD = 0.55 
+LAST_N_IDS = 10           
+CONTEXT_PADDING = 50      
 
-# Ollama Settings
-OLLAMA_MODEL_NAME = "llava"
-CONTEXT_PADDING = 50  # Pixels to add around the box for context
+# 5. FILTERING
+# COCO Class IDs to ignore: 0 = Person, 60 = Dining Table
+IGNORED_CLASSES = {0, 60}
 
-# --------------------------
-
-# --- GLOBAL SHARED STATE ---
-# Queue to send images to the AI worker
+# ==========================================
+#           SHARED MEMORY
+# ==========================================
 ollama_queue = queue.Queue()
-# Dictionary to store results: { object_id: "Description string" }
-ai_descriptions = {}
+ai_results = {}
 
-# --------------------------
-#     OLLAMA WORKER
-# --------------------------
+current_scene_state = {
+    "frame": None,
+    "boxes": []
+}
+
+# ==========================================
+#           1. THE AI WORKER
+# ==========================================
 def cv2_to_base64(cv2_img):
-    """Convert CV2 BGR image to Base64 string for LLaVA"""
     img_rgb = cv2.cvtColor(cv2_img, cv2.COLOR_BGR2RGB)
     pil_img = Image.fromarray(img_rgb)
+    pil_img = pil_img.convert("RGB") 
     buffered = BytesIO()
     pil_img.save(buffered, format="JPEG")
     return base64.b64encode(buffered.getvalue()).decode("utf-8")
 
-def ollama_worker():
-    """Background thread that processes images one by one"""
-    print("[THREAD] Loading LLaVA model in background...")
+def ai_worker_thread():
+    print(f"[THREAD] Connecting to Ollama ({OLLAMA_MODEL})...")
     try:
-        llm = OllamaLLM(model=OLLAMA_MODEL_NAME)
-        # Pre-warm the model
-        llm.invoke("hello")
-        print("[THREAD] LLaVA Model Ready!")
+        llm = OllamaLLM(model=OLLAMA_MODEL)
+        print("[THREAD] Warming up model...")
+        llm.invoke("hello") 
+        print("[THREAD] LLaVA is Ready!")
     except Exception as e:
-        print(f"[THREAD ERROR] Could not load Ollama: {e}")
+        print(f"[THREAD ERROR] {e}")
         return
 
     while True:
-        # Wait for a task from the main video loop
-        # task structure: (object_id, cropped_image)
         try:
             obj_id, crop_img = ollama_queue.get()
         except:
             continue
 
-        if crop_img is None: continue
+        if crop_img is None: 
+            ollama_queue.task_done()
+            continue
 
         try:
-            # Prepare prompt
-            prompt = "Describe this object in 10 words or less."
-            
-            # Convert image
+            prompt = "Describe this object in 5 words or less."
             img_b64 = cv2_to_base64(crop_img)
-            
-            # Run Inference
             llm_with_image = llm.bind(images=[img_b64])
             response = llm_with_image.invoke(prompt)
+            clean_text = response.replace("\n", " ").strip()
             
-            # Clean up response (remove newlines)
-            clean_response = response.replace("\n", " ").strip()
-            
-            # Store result globally so main thread can see it
-            ai_descriptions[obj_id] = clean_response
-            print(f"[{OLLAMA_MODEL_NAME}] ID {obj_id}: {clean_response}")
+            ai_results[obj_id] = clean_text
+            print(f"[AI] ID {obj_id}: {clean_text}")
             
         except Exception as e:
-            print(f"[THREAD ERROR] Inference failed: {e}")
+            print(f"[THREAD ERROR] {e}")
         finally:
             ollama_queue.task_done()
 
-# --------------------------
-#     TRACKING HELPERS
-# --------------------------
-def make_resnet50_embedder(device):
-    resnet = models.resnet50(weights=ResNet50_Weights.DEFAULT).to(device)
+# ==========================================
+#           2. INTERACTION (MOUSE CLICK)
+# ==========================================
+def on_mouse_click(event, x, y, flags, param):
+    if event == cv2.EVENT_LBUTTONDOWN:
+        frame = current_scene_state["frame"]
+        boxes = current_scene_state["boxes"]
+        
+        if frame is None or not boxes:
+            return
+
+        clicked_something = False
+        for (x1, y1, x2, y2, obj_id) in boxes:
+            if x1 <= x <= x2 and y1 <= y <= y2:
+                print(f"[CLICK] User clicked on ID {obj_id}")
+                
+                ai_results[obj_id] = "Thinking..."
+                clicked_something = True
+                
+                h, w, _ = frame.shape
+                p = CONTEXT_PADDING
+                cx1, cy1 = max(0, x1-p), max(0, y1-p)
+                cx2, cy2 = min(w, x2+p), min(h, y2+p)
+                crop = frame[cy1:cy2, cx1:cx2].copy()
+                
+                ollama_queue.put((obj_id, crop))
+                break
+        
+        if not clicked_something:
+            print("[CLICK] Clicked empty space.")
+
+# ==========================================
+#           3. TRACKING HELPERS
+# ==========================================
+def make_embedder():
+    print(f"[INFO] Loading ResNet50 on {DEVICE}...")
+    resnet = models.resnet50(weights=ResNet50_Weights.DEFAULT).to(DEVICE)
     resnet.eval()
-    feature_extractor = torch.nn.Sequential(*list(resnet.children())[:-1]).to(device)
-    feature_extractor.eval()
+    extractor = torch.nn.Sequential(*list(resnet.children())[:-1]).to(DEVICE)
     transform = T.Compose([
         T.ToPILImage(), T.Resize((224,224)), T.ToTensor(),
         T.Normalize(mean=[0.485,0.456,0.406], std=[0.229,0.224,0.225])
     ])
-    return feature_extractor, transform, 2048
+    return extractor, transform
 
-def get_embedding_resnet(feature_extractor, transform, crop_bgr, device):
-    if crop_bgr is None or crop_bgr.size == 0: return None
-    crop_rgb = cv2.cvtColor(crop_bgr, cv2.COLOR_BGR2RGB)
-    x = transform(crop_rgb).unsqueeze(0).to(device)
+def get_embedding(extractor, transform, img):
+    if img is None or img.size == 0: return None
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    t_img = transform(rgb).unsqueeze(0).to(DEVICE)
     with torch.no_grad():
-        vec = feature_extractor(x).squeeze().cpu().numpy()
-    return vec / (np.linalg.norm(vec) + 1e-8)
+        emb = extractor(t_img).squeeze().cpu().numpy()
+    return emb / (np.linalg.norm(emb) + 1e-8)
 
 def cosine_sim(a, b):
-    a = np.asarray(a, dtype=np.float32)
-    b = np.asarray(b, dtype=np.float32)
-    if b.ndim == 1:
-        return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
-    a_norm = a / (np.linalg.norm(a) + 1e-8)
-    b_norm = b / (np.linalg.norm(b, axis=1, keepdims=True) + 1e-8)
-    return (b_norm @ a_norm)
+    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8)
 
-# --------------------------
-#     MAIN LOOP
-# --------------------------
-def run(video_source):
-    # 1. Start AI Thread
-    t = threading.Thread(target=ollama_worker, daemon=True)
+# ==========================================
+#           4. MAIN LOOP
+# ==========================================
+def run_app(video_source):
+    t = threading.Thread(target=ai_worker_thread, daemon=True)
     t.start()
 
-    # 2. Load Models
-    try:
-        yolo = YOLO(YOLO_MODEL)
-    except:
-        yolo = YOLO("yolov8n.pt")
-        
-    feat_extractor, transform, feat_dim = make_resnet50_embedder(DEVICE)
+    print(f"[INFO] Loading YOLO: {YOLO_MODEL}...")
+    yolo = YOLO(YOLO_MODEL)
+    embedder, transform = make_embedder()
 
-    # 3. State
-    recent_ids = deque(maxlen=LAST_N_IDS)
-    id_to_embedding = {}
+    recent_ids = deque(maxlen=LAST_N_IDS) 
+    id_embeddings = {}                    
     next_id = 0
 
     cap = cv2.VideoCapture(video_source if str(video_source) != "0" else 0)
     
-    print("[INFO] Starting video. Press 'q' to quit.")
+    window_name = "Filter & Click (YOLO + LLaVA)"
+    cv2.namedWindow(window_name)
+    cv2.setMouseCallback(window_name, on_mouse_click)
+
+    print("\n[INFO] READY! Ignoring People & Tables.\n")
 
     while True:
         ret, frame = cap.read()
         if not ret: break
 
-        # Detection
+        # --- STEP 1: DETECTION (With Filter) ---
         results = yolo(frame, imgsz=IMG_SZ, conf=CONF_THRESH, verbose=False)
+        
         detections = [] 
         crops = []
         
-        # Parse YOLO
         for r in results:
             for b in r.boxes:
-                conf = float(b.conf[0])
+                # 1. Check Class ID
                 cls_id = int(b.cls[0])
-                cls_name = yolo.names[cls_id]
                 
-                if cls_name in IGNORED_CLASSES: continue
+                # 2. Filter: If it's a Person (0) or Table (60), SKIP IT.
+                if cls_id in IGNORED_CLASSES:
+                    continue
 
                 x1,y1,x2,y2 = map(int, b.xyxy[0])
-                if (x2-x1) < MIN_BOX_SIDE or (y2-y1) < MIN_BOX_SIDE: continue
                 
-                detections.append((x1, y1, x2, y2, cls_name))
+                # Filter tiny noise
+                if (x2-x1) < 20 or (y2-y1) < 20: continue
+                
+                detections.append((x1, y1, x2, y2))
                 crops.append(frame[y1:y2, x1:x2])
 
-        # Embeddings
-        embeddings = []
-        for crop in crops:
-            embeddings.append(get_embedding_resnet(feat_extractor, transform, crop, DEVICE))
+        # --- STEP 2: TRACKING ---
+        embeddings = [get_embedding(embedder, transform, c) for c in crops]
+        current_frame_assignments = []
 
-        assigned_ids_this_frame = []
-
-        # Tracking Logic
         for i, det in enumerate(detections):
-            x1, y1, x2, y2, cls_name = det
+            x1, y1, x2, y2 = det
             emb = embeddings[i]
-            assigned = None
+            assigned_id = None
             
-            # Try to match existing ID
-            if emb is not None and len(recent_ids) > 0:
-                valid_refs = [rid for rid in recent_ids if rid in id_to_embedding]
-                if valid_refs:
-                    ref_embs = np.vstack([id_to_embedding[rid] for rid in valid_refs])
-                    sims = cosine_sim(emb, ref_embs)
-                    best_idx = np.argmax(sims)
-                    if sims[best_idx] >= SIMILARITY_THRESHOLD:
-                        assigned = valid_refs[best_idx]
+            if emb is not None and recent_ids:
+                best_sim = 0
+                best_match = None
+                for rid in recent_ids:
+                    if rid in id_embeddings:
+                        sim = cosine_sim(emb, id_embeddings[rid])
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_match = rid
+                if best_sim >= SIMILARITY_THRESHOLD:
+                    assigned_id = best_match
 
-            # --- NEW OBJECT DETECTED ---
-            if assigned is None:
-                assigned = next_id
+            if assigned_id is None:
+                assigned_id = next_id
                 next_id += 1
                 if emb is not None:
-                    id_to_embedding[assigned] = emb
-                recent_ids.append(assigned)
-                
-                # --- TRIGGER OLLAMA HERE ---
-                # 1. Add context padding
-                h, w, _ = frame.shape
-                pad = CONTEXT_PADDING
-                cx1, cy1 = max(0, x1-pad), max(0, y1-pad)
-                cx2, cy2 = min(w, x2+pad), min(h, y2+pad)
-                
-                # 2. Crop with context
-                context_crop = frame[cy1:cy2, cx1:cx2].copy()
-                
-                # 3. Send to background thread
-                # We put it in ai_descriptions as "Analyzing..." immediately
-                ai_descriptions[assigned] = "Analyzing..."
-                ollama_queue.put((assigned, context_crop))
-                # ---------------------------
+                    id_embeddings[assigned_id] = emb
+                recent_ids.append(assigned_id)
 
-            assigned_ids_this_frame.append(assigned)
+            current_frame_assignments.append(assigned_id)
 
-        # Drawing
-        for (det, tid) in zip(detections, assigned_ids_this_frame):
-            x1, y1, x2, y2, cls_name = det
+        # --- STEP 3: UPDATE MOUSE STATE ---
+        current_frame_boxes = []
+        for (det, tid) in zip(detections, current_frame_assignments):
+             x1, y1, x2, y2 = det
+             current_frame_boxes.append((x1, y1, x2, y2, tid))
+        
+        current_scene_state["frame"] = frame
+        current_scene_state["boxes"] = current_frame_boxes
+
+        # --- STEP 4: VISUALIZATION ---
+        for (x1, y1, x2, y2, tid) in current_frame_boxes:
+            text = ai_results.get(tid, "")
             
-            # Determine color
-            color = (0, 255, 0) # Green for known
+            if text == "Thinking...":
+                color = (0, 165, 255) 
+            elif text != "":
+                color = (0, 255, 0)   
+            else:
+                color = (200, 200, 200) 
+
+            cv2.rectangle(frame, (x1,y1), (x2,y2), (0,0,255), 2)
             
-            # Fetch AI Description
-            desc = ai_descriptions.get(tid, "")
-            if desc == "Analyzing...":
-                color = (0, 165, 255) # Orange for analyzing
-            
-            cv2.rectangle(frame, (x1,y1), (x2,y2), color, 2)
-            
-            # Label: ID + Class
-            label = f"ID:{tid} {cls_name}"
+            # Show ID
+            label = f"ID {tid}"
             cv2.putText(frame, label, (x1, max(15, y1-10)), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
             
-            # Label: AI Description (Draw below box)
-            if desc:
-                cv2.putText(frame, desc, (x1, y2 + 20), 
+            # Show Description
+            if text and text != "Thinking...":
+                cv2.putText(frame, text, (x1, y2 + 25), 
                             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            elif text == "Thinking...":
+                cv2.putText(frame, "Analyzing...", (x1, y2 + 25), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
-        cv2.imshow("YOLO + ResNet + LLaVA", frame)
+        cv2.imshow(window_name, frame)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
@@ -259,6 +280,6 @@ def run(video_source):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--video", type=str, default="0", help="Video path or 0")
+    parser.add_argument("--video", type=str, default="0")
     args = parser.parse_args()
-    run(args.video)
+    run_app(args.video)

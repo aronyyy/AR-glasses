@@ -48,7 +48,6 @@ class Arrow3D(FancyArrowPatch):
 
 # --- 1. CALIBRATION & INTRINSICS ---
 # <<< PASTE Your FOCAL_LENGTH from calibrate_headless.py HERE
-FOCAL_LENGTH = 750.0 # Example: 785.22
 FOCAL_LENGTH = 540
 
 # --- 2. KNOWN OBJECTS (Width in Centimeters) ---
