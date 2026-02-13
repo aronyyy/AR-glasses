@@ -392,7 +392,7 @@ def process_frames(thresholded_image_strict, thresholded_image_medium, threshold
     
     # Example safety check
     if center_x is None or center_y is None or model_center_average[0] is None or model_center_average[1] is None:
-        return  # or skip this frame
+        return 
 
     # Calculate the distance only if model_centers has at least 100 values
     if len(model_centers) >= 100 and center_x is not None:
@@ -462,7 +462,8 @@ def process_frames(thresholded_image_strict, thresholded_image_medium, threshold
         print(f"Gaze Direction:  ({direction[0]:.3f}, {direction[1]:.3f}, {direction[2]:.3f})")
     else:
         print("No valid intersection found.")
-
+        return final_rotated_rect, model_center_average
+    # current code ends with something like:
     cv2.imshow("Frame with Ellipse and Rays", frame)
 
     if GL_SPHERE_AVAILABLE:
@@ -470,8 +471,9 @@ def process_frames(thresholded_image_strict, thresholded_image_medium, threshold
             blended = cv2.addWeighted(frame, 0.6, gl_image, 0.4, 0)
             cv2.imshow("Eye Tracker + Sphere", blended)
 
-    # Return both fitted ellipse and per-frame eyeball center
-    return final_rotated_rect, model_center_average
+    # ensure model_center_average is defined above this point
+    return final_rotated_rect, center
+
 
 
 def update_and_average_point(point_list, new_point, N):
@@ -802,32 +804,24 @@ def compute_gaze_vector(x, y, center_x, center_y, screen_width=640, screen_heigh
         print("File is currently in use. Skipping write.")
 
     return sphere_center, gaze_rotated
-
-# Finds the pupil in an individual frame and returns the center point
 def process_frame(frame):
-    # Crop and resize frame
     frame = crop_to_aspect_ratio(frame)
     frame = cv2.flip(frame, -1)
 
-    # find the darkest point
     darkest_point = get_darkest_area(frame)
-
-    # Convert to grayscale to handle pixel value operations
     gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     darkest_pixel_value = gray_frame[darkest_point[1], darkest_point[0]]
 
-    # apply thresholding operations at different levels
-    thresholded_image_strict  = apply_binary_threshold(gray_frame, darkest_pixel_value, 5)   # lite
+    thresholded_image_strict  = apply_binary_threshold(gray_frame, darkest_pixel_value, 5)
     thresholded_image_strict  = mask_outside_square(thresholded_image_strict,  darkest_point, 250)
 
-    thresholded_image_medium  = apply_binary_threshold(gray_frame, darkest_pixel_value, 15)  # medium
+    thresholded_image_medium  = apply_binary_threshold(gray_frame, darkest_pixel_value, 15)
     thresholded_image_medium  = mask_outside_square(thresholded_image_medium,  darkest_point, 250)
 
-    thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, 25)  # heavy
+    thresholded_image_relaxed = apply_binary_threshold(gray_frame, darkest_pixel_value, 25)
     thresholded_image_relaxed = mask_outside_square(thresholded_image_relaxed, darkest_point, 250)
 
-    # take the three images thresholded at different levels and process them
-    final_rotated_rect, model_center_average = process_frames(
+    result = process_frames(
         thresholded_image_strict,
         thresholded_image_medium,
         thresholded_image_relaxed,
@@ -838,10 +832,13 @@ def process_frame(frame):
         False
     )
 
-    # final_rotated_rect  : ellipse around pupil
-    # model_center_average: current estimate of eyeball center (rolling)
-    return final_rotated_rect, model_center_average
+    # normalize result
+    if isinstance(result, tuple) and len(result) == 2:
+        final_rotated_rect, sphere_center = result   # sphere_center is 3D (x,y,z)
+    else:
+        final_rotated_rect, sphere_center = None, None
 
+    return final_rotated_rect, sphere_center
 
 
 # Process video from the selected camera
