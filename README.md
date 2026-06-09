@@ -74,6 +74,10 @@ Research prototype developed at CFI, IIT Madras. Possible next steps: tighter ga
 
 Built by the AR Glasses project team at the **Centre for Innovation (CFI), IIT Madras**.
 
+Devansh Goel
+Karan Kumar 
+Aarush
+
 ---
 
 *A computer-vision project exploring gaze-aware augmented reality — pairing eye tracking with object detection to model user attention.*
