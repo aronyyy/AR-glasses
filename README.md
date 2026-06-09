@@ -2,8 +2,8 @@
 
 A wearable AR research prototype that combines **real-time eye-gaze tracking** with **object detection**, so the system can identify *the object a user is actually looking at* — not just everything in the frame. Built at the **Centre for Innovation (CFI), IIT Madras**.
 
-<!-- Add a demo GIF or screenshot here for instant context:
-![Demo](gaze_clips/demo.gif)
+![Demo](assets/demo.jpeg)
+![Hardware](assets/hardware.jpeg)
 -->
 
 ---
